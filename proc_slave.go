@@ -29,18 +29,15 @@ type State struct {
 	//StartedAt records the start time of the program
 	StartedAt time.Time
 
-	// 两个不同的Listener的区别?
+	//监听的Listerns
 	//Listener is the first net.Listener in Listeners
-	Listener net.Listener
-	//Listeners are the set of acquired sockets by the master
-	//process. These are all passed into this program in the
-	//same order they are specified in Config.Addresses.
+	Listener  net.Listener
 	Listeners []net.Listener
 
-	//Program's first listening address
-	Address string
-	//Program's listening addresses
+	//监听的地址
+	Address   string
 	Addresses []string
+
 	//GracefulShutdown will be filled when its time to perform
 	//a graceful shutdown.
 	GracefulShutdown chan bool
@@ -170,6 +167,7 @@ func (sp *slave) watchSignal() {
 		}
 
 		//start death-timer
+		//如何退出呢? 自杀即可
 		go func() {
 			time.Sleep(sp.Config.TerminateTimeout)
 			sp.debugf("timeout. forceful shutdown")

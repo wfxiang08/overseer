@@ -28,10 +28,12 @@ type Config struct {
 	Required bool
 	//Program's main function
 	Program func(state State)
+
 	//Program's zero-downtime socket listening address (set this or Addresses)
 	Address string
 	//Program's zero-downtime socket listening addresses (set this or Address)
 	Addresses []string
+
 	//RestartSignal will manually trigger a graceful restart. Defaults to SIGUSR2.
 	RestartSignal os.Signal
 	//TerminateTimeout controls how long overseer should
