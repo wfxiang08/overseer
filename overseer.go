@@ -9,8 +9,6 @@ import (
 	"os"
 	"runtime"
 	"time"
-
-	"github.com/jpillora/overseer/fetcher"
 )
 
 const (
@@ -53,12 +51,7 @@ type Config struct {
 	NoWarn bool
 	//NoRestart disables all restarts, this option essentially converts
 	//the RestartSignal into a "ShutdownSignal".
-	NoRestart bool
-	//NoRestartAfterFetch disables automatic restarts after each upgrade.
-	//Though manual restarts using the RestartSignal can still be performed.
-	NoRestartAfterFetch bool
-	//Fetcher will be used to fetch binaries.
-	Fetcher fetcher.Interface
+	NoRestart bool // 默认为false, 表示会重启
 }
 
 func validate(c *Config) error {
@@ -96,8 +89,10 @@ func RunErr(c Config) error {
 //encountered, overseer fallsback to running
 //the program directly (unless Required is set).
 func Run(c Config) {
+	// 根据给定的配置来运行
 	err := runErr(&c)
 	if err != nil {
+		// 如果不是Requried, 那么可以直接在Master进程中运行
 		if c.Required {
 			log.Fatalf("[overseer] %s", err)
 		} else if c.Debug || !c.NoWarn {
@@ -153,7 +148,9 @@ func runErr(c *Config) error {
 	if sanityCheck() {
 		return nil
 	}
-	//run either in master or slave mode
+
+	// run either in master or slave mode
+	// slave mode由 master来触发
 	if os.Getenv(envIsSlave) == "1" {
 		currentProcess = &slave{Config: c}
 	} else {

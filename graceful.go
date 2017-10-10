@@ -31,6 +31,8 @@ func (l *overseerListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 封装 conn
 	conn.SetKeepAlive(true)                  // see http.tcpKeepAliveListener
 	conn.SetKeepAlivePeriod(3 * time.Minute) // see http.tcpKeepAliveListener
 	uconn := overseerConn{

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jpillora/overseer"
-	"github.com/jpillora/overseer/fetcher"
 )
 
 //see example.sh for the use-case
@@ -18,6 +17,8 @@ var BuildID = "0"
 //'prog()' is run in a child process
 func prog(state overseer.State) {
 	fmt.Printf("app#%s (%s) listening...\n", BuildID, state.ID)
+
+	// 对外提供服务
 	http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d, _ := time.ParseDuration(r.URL.Query().Get("d"))
 		time.Sleep(d)
@@ -31,9 +32,8 @@ func prog(state overseer.State) {
 //'main()' is run in the initial process
 func main() {
 	overseer.Run(overseer.Config{
-		Program: prog,
+		Program: prog, // 执行的函数体
 		Address: ":5001",
-		Fetcher: &fetcher.File{Path: "my_app_next"},
 		Debug:   false, //display log of overseer actions
 	})
 }

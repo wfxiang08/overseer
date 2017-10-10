@@ -28,12 +28,15 @@ type State struct {
 	ID string
 	//StartedAt records the start time of the program
 	StartedAt time.Time
+
+	// 两个不同的Listener的区别?
 	//Listener is the first net.Listener in Listeners
 	Listener net.Listener
 	//Listeners are the set of acquired sockets by the master
 	//process. These are all passed into this program in the
 	//same order they are specified in Config.Addresses.
 	Listeners []net.Listener
+
 	//Program's first listening address
 	Address string
 	//Program's listening addresses
@@ -69,18 +72,25 @@ func (sp *slave) run() error {
 	if err := sp.watchParent(); err != nil {
 		return err
 	}
+
+	// 集成文件描述符
 	if err := sp.initFileDescriptors(); err != nil {
 		return err
 	}
+
 	sp.watchSignal()
 	//run program with state
 	sp.debugf("start program")
+
+	// 运行Program
 	sp.Config.Program(sp.state)
 	return nil
 }
 
 func (sp *slave) watchParent() error {
 	sp.masterPid = os.Getppid()
+
+	// 子进程如何监控父进程
 	proc, err := os.FindProcess(sp.masterPid)
 	if err != nil {
 		return fmt.Errorf("master process: %s", err)
@@ -90,6 +100,7 @@ func (sp *slave) watchParent() error {
 		//send signal 0 to master process forever
 		for {
 			//should not error as long as the process is alive
+			// 如果父进程挂了，则子进程自动退出
 			if err := sp.masterProc.Signal(syscall.Signal(0)); err != nil {
 				os.Exit(1)
 			}
@@ -99,6 +110,7 @@ func (sp *slave) watchParent() error {
 	return nil
 }
 
+// 初始化文件描述符
 func (sp *slave) initFileDescriptors() error {
 	//inspect file descriptors
 	numFDs, err := strconv.Atoi(os.Getenv(envNumFDs))
@@ -107,7 +119,10 @@ func (sp *slave) initFileDescriptors() error {
 	}
 	sp.listeners = make([]*overseerListener, numFDs)
 	sp.state.Listeners = make([]net.Listener, numFDs)
+
+	// 遍历所有的FD, 尝试集成
 	for i := 0; i < numFDs; i++ {
+		// 问题来了? l在什么时候被创建的呢?
 		f := os.NewFile(uintptr(3+i), "")
 		l, err := net.FileListener(f)
 		if err != nil {
@@ -117,6 +132,8 @@ func (sp *slave) initFileDescriptors() error {
 		sp.listeners[i] = u
 		sp.state.Listeners[i] = u
 	}
+
+	// 记录第一个
 	if len(sp.state.Listeners) > 0 {
 		sp.state.Listener = sp.state.Listeners[0]
 	}
@@ -125,13 +142,17 @@ func (sp *slave) initFileDescriptors() error {
 
 func (sp *slave) watchSignal() {
 	signals := make(chan os.Signal)
+	// 监听重启信号
 	signal.Notify(signals, sp.Config.RestartSignal)
+
 	go func() {
 		<-signals
+		// 不再监听信号，多余的也不消费了
 		signal.Stop(signals)
 		sp.debugf("graceful shutdown requested")
 		//master wants to restart,
 		close(sp.state.GracefulShutdown)
+
 		//release any sockets and notify master
 		if len(sp.listeners) > 0 {
 			//perform graceful shutdown
@@ -142,10 +163,12 @@ func (sp *slave) watchSignal() {
 			//a new process before this child has actually exited.
 			//early restarts not supported with restarts disabled.
 			if !sp.NoRestart {
+				// 通知Master SIGUSR1
 				sp.masterProc.Signal(SIGUSR1)
 			}
 			//listeners should be waiting on connections to close...
 		}
+
 		//start death-timer
 		go func() {
 			time.Sleep(sp.Config.TerminateTimeout)
