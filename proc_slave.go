@@ -2,13 +2,13 @@ package overseer
 
 import (
 	"fmt"
-	"log"
+	"time"
 	"net"
 	"os"
-	"os/signal"
-	"strconv"
 	"syscall"
-	"time"
+	"strconv"
+	"os/signal"
+	log "github.com/wfxiang08/cyutils/utils/rolling_log"
 )
 
 var (
@@ -23,26 +23,26 @@ type State struct {
 	//whether overseer is running enabled. When enabled,
 	//this program will be running in a child process and
 	//overseer will perform rolling upgrades.
-	Enabled bool
+	Enabled          bool
 	//ID is a SHA-1 hash of the current running binary
-	ID string
+	ID               string
 	//StartedAt records the start time of the program
-	StartedAt time.Time
+	StartedAt        time.Time
 
 	//监听的Listerns
 	//Listener is the first net.Listener in Listeners
-	Listener  net.Listener
-	Listeners []net.Listener
+	Listener         net.Listener
+	Listeners        []net.Listener
 
 	//监听的地址
-	Address   string
-	Addresses []string
+	Address          string
+	Addresses        []string
 
 	//GracefulShutdown will be filled when its time to perform
 	//a graceful shutdown.
 	GracefulShutdown chan bool
 	//Path of the binary currently being executed
-	BinPath string
+	BinPath          string
 }
 
 //a overseer slave process
@@ -120,7 +120,7 @@ func (sp *slave) initFileDescriptors() error {
 	// 遍历所有的FD, 尝试集成
 	for i := 0; i < numFDs; i++ {
 		// 问题来了? l在什么时候被创建的呢?
-		f := os.NewFile(uintptr(3+i), "")
+		f := os.NewFile(uintptr(3 + i), "")
 		l, err := net.FileListener(f)
 		if err != nil {
 			return fmt.Errorf("failed to inherit file descriptor: %d", i)
@@ -184,12 +184,12 @@ func (sp *slave) triggerRestart() {
 
 func (sp *slave) debugf(f string, args ...interface{}) {
 	if sp.Config.Debug {
-		log.Printf("[overseer slave#"+sp.id+"] "+f, args...)
+		log.Printf("[overseer slave#" + sp.id + "] " + f, args...)
 	}
 }
 
 func (sp *slave) warnf(f string, args ...interface{}) {
 	if sp.Config.Debug || !sp.Config.NoWarn {
-		log.Printf("[overseer slave#"+sp.id+"] "+f, args...)
+		log.Printf("[overseer slave#" + sp.id + "] " + f, args...)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
+	log "github.com/wfxiang08/cyutils/utils/rolling_log"
 	"net"
 	"os"
 	"os/exec"
@@ -18,9 +18,10 @@ import (
 	"time"
 
 	"github.com/kardianos/osext"
+	"strings"
 )
 
-var tmpBinPath = filepath.Join(os.TempDir(), "overseer-"+token())
+var tmpBinPath = filepath.Join(os.TempDir(), "overseer-" + token())
 
 //a overseer master process
 type master struct {
@@ -146,22 +147,53 @@ func (mp *master) sendSignal(s os.Signal) {
 func (mp *master) retreiveFileDescriptors() error {
 	mp.slaveExtraFiles = make([]*os.File, len(mp.Config.Addresses))
 	for i, addr := range mp.Config.Addresses {
-		a, err := net.ResolveTCPAddr("tcp", addr)
-		if err != nil {
-			return fmt.Errorf("Invalid address %s (%s)", addr, err)
+		// 两种格式：
+		// l, err := net.Listen(p.addr.Network(), p.addr.String())
+		if strings.Contains(addr, ":") {
+			// 如果是tcp的socket
+			a, err := net.ResolveTCPAddr("tcp", addr)
+			if err != nil {
+				return fmt.Errorf("Invalid address %s (%s)", addr, err)
+			}
+			l, err := net.ListenTCP("tcp", a)
+			if err != nil {
+				return err
+			}
+			f, err := l.File()
+			if err != nil {
+				return fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)
+			}
+			if err := l.Close(); err != nil {
+				return fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)
+			}
+			mp.slaveExtraFiles[i] = f
+		} else {
+			addr, err := net.ResolveUnixAddr("unix", addr)
+			if err != nil {
+				return fmt.Errorf("Invalid address %s (%s)", addr, err)
+			}
+			l, err := net.ListenUnix(addr.Network(), addr)
+			if err != nil {
+				return err
+			}
+
+			f, err := l.File()
+			if err != nil {
+				return fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)
+			}
+			if err := l.Close(); err != nil {
+				return fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)
+			}
+			mp.slaveExtraFiles[i] = f
+			// 注意: 该Socket需要给所有需要访问该接口的人以读写的权限
+			// 因此最终的 sock文件的权限为: 0777
+			// 例如: aa.sock root/root 07777
+			//      换一个用户，rm aa.sock 似乎无效
+			filePath := addr.String()
+			os.Chmod(filePath, os.ModePerm)
+
 		}
-		l, err := net.ListenTCP("tcp", a)
-		if err != nil {
-			return err
-		}
-		f, err := l.File()
-		if err != nil {
-			return fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)
-		}
-		if err := l.Close(); err != nil {
-			return fmt.Errorf("Failed to close listener for: %s (%s)", addr, err)
-		}
-		mp.slaveExtraFiles[i] = f
+
 	}
 	return nil
 }
@@ -185,10 +217,10 @@ func (mp *master) triggerRestart() {
 
 	select {
 	case <-mp.restarted:
-		//success
+	//success
 		mp.debugf("restart success")
 	case <-time.After(mp.TerminateTimeout):
-		//times up mr. process, we did ask nicely!
+	//times up mr. process, we did ask nicely!
 		mp.debugf("graceful timeout, forcing exit")
 		mp.sendSignal(os.Kill)
 	}
@@ -216,13 +248,13 @@ func (mp *master) fork() error {
 
 	//provide the slave process with some state
 	e := os.Environ()
-	e = append(e, envBinID+"="+hex.EncodeToString(mp.binHash))
-	e = append(e, envBinPath+"="+mp.binPath)
-	e = append(e, envSlaveID+"="+strconv.Itoa(mp.slaveID))
-	e = append(e, envIsSlave+"=1") // 启动一个SLAVE, 其实Master似乎也没有做什么事情?
+	e = append(e, envBinID + "=" + hex.EncodeToString(mp.binHash))
+	e = append(e, envBinPath + "=" + mp.binPath)
+	e = append(e, envSlaveID + "=" + strconv.Itoa(mp.slaveID))
+	e = append(e, envIsSlave + "=1") // 启动一个SLAVE, 其实Master似乎也没有做什么事情?
 
 	// 监听几个Listern, 那么就传递几个socket
-	e = append(e, envNumFDs+"="+strconv.Itoa(len(mp.slaveExtraFiles)))
+	e = append(e, envNumFDs + "=" + strconv.Itoa(len(mp.slaveExtraFiles)))
 	cmd.Env = e
 
 	//inherit master args/stdfiles
@@ -251,8 +283,8 @@ func (mp *master) fork() error {
 	//wait....
 	select {
 	case err := <-cmdwait:
-		//program exited before releasing descriptors
-		//proxy exit code out to master
+	//program exited before releasing descriptors
+	//proxy exit code out to master
 		code := 0
 		if err != nil {
 			code = 1
@@ -263,34 +295,34 @@ func (mp *master) fork() error {
 			}
 		}
 		mp.debugf("prog exited with %d", code)
-		//if a restarts are disabled or if it was an
-		//unexpected crash, proxy this exit straight
-		//through to the main process
+	//if a restarts are disabled or if it was an
+	//unexpected crash, proxy this exit straight
+	//through to the main process
 		if mp.NoRestart || !mp.restarting {
 			os.Exit(code)
 		}
 	case <-mp.descriptorsReleased:
-		// 如果子进程放弃了fd, 那么可以立即Fork一个新的进程?
-		//if descriptors are released, the program
-		//has yielded control of its sockets and
-		//a parallel instance of the program can be
-		//started safely. it should serve state.Listeners
-		//to ensure downtime is kept at <1sec. The previous
-		//cmd.Wait() will still be consumed though the
-		//result will be discarded.
+	// 如果子进程放弃了fd, 那么可以立即Fork一个新的进程?
+	//if descriptors are released, the program
+	//has yielded control of its sockets and
+	//a parallel instance of the program can be
+	//started safely. it should serve state.Listeners
+	//to ensure downtime is kept at <1sec. The previous
+	//cmd.Wait() will still be consumed though the
+	//result will be discarded.
 	}
 	return nil
 }
 
 func (mp *master) debugf(f string, args ...interface{}) {
 	if mp.Config.Debug {
-		log.Printf("[overseer master] "+f, args...)
+		log.Printf("[overseer master] " + f, args...)
 	}
 }
 
 func (mp *master) warnf(f string, args ...interface{}) {
 	if mp.Config.Debug || !mp.Config.NoWarn {
-		log.Printf("[overseer master] "+f, args...)
+		log.Printf("[overseer master] " + f, args...)
 	}
 }
 

@@ -5,7 +5,7 @@ package overseer
 import (
 	"errors"
 	"fmt"
-	"log"
+	log "github.com/wfxiang08/cyutils/utils/rolling_log"
 	"os"
 	"runtime"
 	"time"
@@ -96,7 +96,7 @@ func Run(c Config) {
 	if err != nil {
 		// 如果不是Requried, 那么可以直接在Master进程中运行
 		if c.Required {
-			log.Fatalf("[overseer] %s", err)
+			log.Panicf("[overseer] %s", err)
 		} else if c.Debug || !c.NoWarn {
 			log.Printf("[overseer] disabled. run failed: %s", err)
 		}
