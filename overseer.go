@@ -4,21 +4,17 @@ package overseer
 
 import (
 	"errors"
-	"fmt"
 	log "github.com/wfxiang08/cyutils/utils/rolling_log"
 	"os"
-	"runtime"
 	"time"
 )
 
 const (
-	envSlaveID        = "OVERSEER_SLAVE_ID"
-	envIsSlave        = "OVERSEER_IS_SLAVE"
-	envNumFDs         = "OVERSEER_NUM_FDS"
-	envBinID          = "OVERSEER_BIN_ID"
-	envBinPath        = "OVERSEER_BIN_PATH"
-	envBinCheck       = "OVERSEER_BIN_CHECK"
-	envBinCheckLegacy = "GO_UPGRADE_BIN_CHECK"
+	envSlaveID = "OVERSEER_SLAVE_ID"
+	envIsSlave = "OVERSEER_IS_SLAVE"
+	envNumFDs  = "OVERSEER_NUM_FDS"
+	envBinID   = "OVERSEER_BIN_ID"
+	envBinPath = "OVERSEER_BIN_PATH"
 )
 
 // Config defines overseer's run-time configuration
@@ -40,13 +36,7 @@ type Config struct {
 	//wait for the program to terminate itself. After this
 	//timeout, overseer will issue a SIGKILL.
 	TerminateTimeout time.Duration
-	//MinFetchInterval defines the smallest duration between Fetch()s.
-	//This helps to prevent unwieldy fetch.Interfaces from hogging
-	//too many resources. Defaults to 1 second.
-	MinFetchInterval time.Duration
-	//PreUpgrade runs after a binary has been retrieved, user defined checks
-	//can be run here and returning an error will cancel the upgrade.
-	PreUpgrade func(tempBinaryPath string) error
+
 	//Debug enables all [overseer] logs.
 	Debug bool
 	//NoWarn disables warning [overseer] logs.
@@ -69,22 +59,17 @@ func validate(c *Config) error {
 	} else if len(c.Addresses) > 0 {
 		c.Address = c.Addresses[0]
 	}
+
+	// 设置重启信号: kill -USR2 pid
 	if c.RestartSignal == nil {
 		c.RestartSignal = SIGUSR2
 	}
+
+	// 默认结束时最多等待30s
 	if c.TerminateTimeout <= 0 {
 		c.TerminateTimeout = 30 * time.Second
 	}
-	if c.MinFetchInterval <= 0 {
-		c.MinFetchInterval = 1 * time.Second
-	}
 	return nil
-}
-
-//RunErr allows manual handling of any
-//overseer errors.
-func RunErr(c Config) error {
-	return runErr(&c)
 }
 
 //Run executes overseer, if an error is
@@ -94,6 +79,8 @@ func Run(c Config) {
 	// 根据给定的配置来运行
 	err := runErr(&c)
 	if err != nil {
+		log.ErrorErrorf(err, "RunErr faild")
+
 		// 如果不是Requried, 那么可以直接在Master进程中运行
 		if c.Required {
 			log.Panicf("[overseer] %s", err)
@@ -106,70 +93,19 @@ func Run(c Config) {
 	os.Exit(0)
 }
 
-//sanityCheck returns true if a check was performed
-func sanityCheck() bool {
-	//sanity check
-	if token := os.Getenv(envBinCheck); token != "" {
-		fmt.Fprint(os.Stdout, token)
-		return true
-	}
-	//legacy sanity check using old env var
-	if token := os.Getenv(envBinCheckLegacy); token != "" {
-		fmt.Fprint(os.Stdout, token)
-		return true
-	}
-	return false
-}
-
-//SanityCheck manually runs the check to ensure this binary
-//is compatible with overseer. This tries to ensure that a restart
-//is never performed against a bad binary, as it would require
-//manual intervention to rectify. This is automatically done
-//on overseer.Run() though it can be manually run prior whenever
-//necessary.
-func SanityCheck() {
-	if sanityCheck() {
-		os.Exit(0)
-	}
-}
-
-//abstraction over master/slave
-var currentProcess interface {
-	triggerRestart()
-	run() error
-}
-
 func runErr(c *Config) error {
-	//os not supported
-	if !supported {
-		return fmt.Errorf("os (%s) not supported", runtime.GOOS)
-	}
+
 	if err := validate(c); err != nil {
 		return err
 	}
-	if sanityCheck() {
-		return nil
-	}
-
 	// run either in master or slave mode
 	// slave mode由 master来触发
+	// 正常情况下，我们会以master的方式启动；然后master再启动slave
 	if os.Getenv(envIsSlave) == "1" {
-		currentProcess = &slave{Config: c}
+		slaveProcess := &slave{Config: c}
+		return slaveProcess.run()
 	} else {
-		currentProcess = &master{Config: c}
+		masterProcess := &master{Config: c}
+		return masterProcess.run()
 	}
-	return currentProcess.run()
-}
-
-//Restart programmatically triggers a graceful restart. If NoRestart
-//is enabled, then this will essentially be a graceful shutdown.
-func Restart() {
-	if currentProcess != nil {
-		currentProcess.triggerRestart()
-	}
-}
-
-//IsSupported returns whether overseer is supported on the current OS.
-func IsSupported() bool {
-	return supported
 }

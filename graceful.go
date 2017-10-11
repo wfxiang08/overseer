@@ -22,21 +22,38 @@ func newOverseerListener(l net.Listener) *overseerListener {
 type overseerListener struct {
 	net.Listener
 	closeError   error
-	closeByForce chan bool
-	wg           sync.WaitGroup
+	closeByForce chan bool      // 手动强制关闭，现在似乎没有使用
+	wg           sync.WaitGroup // 等待Accepted请求处理完毕
 }
 
 func (l *overseerListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.(*net.TCPListener).AcceptTCP()
-	if err != nil {
-		return nil, err
+
+	var connection net.Conn
+	// 处理TCP和Unix Domain Socket的不同
+	if tcpListener, ok := l.Listener.(*net.TCPListener); ok {
+		// 支持TCP
+		conn, err := tcpListener.AcceptTCP()
+		if err != nil {
+			return nil, err
+		}
+
+		// 添加KeepAlive等
+		// Unix Domain Socket就不需要这些设置
+		conn.SetKeepAlive(true)                  // see http.tcpKeepAliveListener
+		conn.SetKeepAlivePeriod(3 * time.Minute) // see http.tcpKeepAliveListener
+
+		connection = conn
+	} else {
+		// 支持Unix Domain Socket
+		conn, err := l.Listener.(*net.UnixListener).AcceptUnix()
+		if err != nil {
+			return nil, err
+		}
+		connection = conn
 	}
 
-	// 封装 conn
-	conn.SetKeepAlive(true)                  // see http.tcpKeepAliveListener
-	conn.SetKeepAlivePeriod(3 * time.Minute) // see http.tcpKeepAliveListener
 	uconn := overseerConn{
-		Conn:   conn,
+		Conn:   connection,
 		wg:     &l.wg,
 		closed: make(chan bool),
 	}
@@ -44,6 +61,8 @@ func (l *overseerListener) Accept() (net.Conn, error) {
 		//connection watcher
 		select {
 		case <-l.closeByForce:
+			// 异步等待关闭: 手动强制关闭 或者 其他关闭方式
+			// (close也会导致 <-l.closeByForce 返回)
 			uconn.Close()
 		case <-uconn.closed:
 			//closed manually
@@ -56,13 +75,19 @@ func (l *overseerListener) Accept() (net.Conn, error) {
 //non-blocking trigger close
 func (l *overseerListener) release(timeout time.Duration) {
 	//stop accepting connections - release fd
+	//不再接受新的请求
 	l.closeError = l.Listener.Close()
+
 	//start timer, close by force if deadline not met
 	waited := make(chan bool)
 	go func() {
+		// 等待已有的请求处理完毕
+		// 实现: wait group --> channel的转换
 		l.wg.Wait()
 		waited <- true
 	}()
+
+	// 自然退出，或者"强制退出" (close也会导致 <-l.closeByForce 返回)
 	go func() {
 		select {
 		case <-time.After(timeout):
@@ -81,9 +106,14 @@ func (l *overseerListener) Close() error {
 
 func (l *overseerListener) File() *os.File {
 	// returns a dup(2) - FD_CLOEXEC flag *not* set
-	tl := l.Listener.(*net.TCPListener)
-	fl, _ := tl.File()
-	return fl
+	if tl, ok := l.Listener.(*net.TCPListener); ok {
+		fl, _ := tl.File()
+		return fl
+	} else {
+		ul, _ := l.Listener.(*net.UnixListener)
+		fl, _ := ul.File()
+		return fl
+	}
 }
 
 //notifying on close net.Conn
