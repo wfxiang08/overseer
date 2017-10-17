@@ -21,6 +21,7 @@ func NewTGracefulServerSocket(listener net.Listener) *TGracefulServerSocket {
 	return NewTGracefulServerSocketWithTimeout(listener, 0)
 }
 
+// listener 可以设置clientTimeout
 func NewTGracefulServerSocketWithTimeout(listener net.Listener, clientTimeout time.Duration) *TGracefulServerSocket {
 
 	return &TGracefulServerSocket{listener: listener, clientTimeout: clientTimeout}
@@ -40,17 +41,15 @@ func (p *TGracefulServerSocket) Accept() (thrift.TTransport, error) {
 }
 
 func GracefulRunWithListener(listener net.Listener, processor thrift.TProcessor) {
-
-	// transport := NewTGracefulServerSocketWithTimeout(listener, time.Second*5)
+	// 将listener包装成为transport
 	transport := NewTGracefulServerSocket(listener)
-
 	ch := make(chan thrift.TTransport, 4096)
 	defer close(ch)
 
 	go func() {
 		for c := range ch {
 			go func(c thrift.TTransport) {
-				// 打印异常信息
+				// 1. 打印异常信息
 				defer func() {
 					c.Close()
 					if e := recover(); e != nil {
@@ -58,17 +57,19 @@ func GracefulRunWithListener(listener net.Listener, processor thrift.TProcessor)
 					}
 				}()
 
+				// 2. 注意协议类型: TBinaryProtocol & TFramedTransport
 				ip := thrift.NewTBinaryProtocolTransport(thrift.NewTFramedTransport(c))
 				op := thrift.NewTBinaryProtocolTransport(thrift.NewTFramedTransport(c))
 
-				for true {
+				for {
 					defaultContext := context.Background()
+					// 3. 循环处理每一个请求
 					ok, err := processor.Process(defaultContext, ip, op)
 
 					if err != nil {
 						// 如果链路出现异常（必须结束)
 						if err, ok := err.(thrift.TTransportException); ok && (err.TypeId() == thrift.END_OF_FILE ||
-								strings.Contains(err.Error(), "use of closed network connection")) {
+							strings.Contains(err.Error(), "use of closed network connection")) {
 							return
 						} else if err != nil {
 							// 其他链路问题，直接报错，退出
@@ -99,7 +100,7 @@ func GracefulRunWithListener(listener net.Listener, processor thrift.TProcessor)
 					}
 
 				}
-			}(c)
+			}(c) // c必须通过参数传递给go func, 不能在内部直接访问(否则异步请求看到的会有问题)
 		}
 	}()
 

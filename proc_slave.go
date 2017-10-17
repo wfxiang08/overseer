@@ -24,18 +24,14 @@ type State struct {
 	//this program will be running in a child process and
 	//overseer will perform rolling upgrades.
 	Enabled bool
+
 	//ID is a SHA-1 hash of the current running binary
 	ID string
 	//StartedAt records the start time of the program
 	StartedAt time.Time
 
-	//监听的Listerns
-	//Listener is the first net.Listener in Listeners
-	Listener  net.Listener
+	//监听的Listerns & 监听的地址
 	Listeners []net.Listener
-
-	//监听的地址
-	Address   string
 	Addresses []string
 
 	//Path of the binary currently being executed
@@ -60,7 +56,6 @@ func (sp *slave) run() error {
 	sp.state.Enabled = true
 	sp.state.ID = os.Getenv(envBinID)
 	sp.state.StartedAt = time.Now()
-	sp.state.Address = sp.Config.Address
 	sp.state.Addresses = sp.Config.Addresses
 
 	sp.state.BinPath = os.Getenv(envBinPath)
@@ -121,6 +116,7 @@ func (sp *slave) initFileDescriptors() error {
 		f := os.NewFile(uintptr(3+i), "")
 		l, err := net.FileListener(f)
 		if err != nil {
+			log.ErrorErrorf(err, "failed to inherit file descriptor: %d", i)
 			return fmt.Errorf("failed to inherit file descriptor: %d", i)
 		}
 		u := newOverseerListener(l)
@@ -128,10 +124,6 @@ func (sp *slave) initFileDescriptors() error {
 		sp.state.Listeners[i] = u
 	}
 
-	// 记录第一个
-	if len(sp.state.Listeners) > 0 {
-		sp.state.Listener = sp.state.Listeners[0]
-	}
 	return nil
 }
 
@@ -158,6 +150,7 @@ func (sp *slave) watchSignal() {
 			//early restarts not supported with restarts disabled.
 			if !sp.NoRestart {
 				// 通知Master SIGUSR1
+				log.Printf("Child quit SIGUSR1 from [%d] to [%d]", os.Getpid(), sp.masterProc.Pid)
 				sp.masterProc.Signal(SIGUSR1)
 			}
 			//listeners should be waiting on connections to close...

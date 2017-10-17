@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kardianos/osext"
 	"strings"
 )
 
@@ -37,7 +38,14 @@ type master struct {
 }
 
 func (mp *master) run() error {
-	log.Printf("Master run...")
+
+	// 检查bin，计算md5
+	if err := mp.checkBinary(); err != nil {
+		log.ErrorErrorf(err, "check binary failed")
+		return err
+	}
+
+	log.Printf("Master %s run...", mp.binPath)
 
 	mp.setupSignalling()
 	if err := mp.retreiveFileDescriptors(); err != nil {
@@ -45,6 +53,25 @@ func (mp *master) run() error {
 	}
 
 	return mp.forkLoop()
+}
+
+func (mp *master) checkBinary() error {
+	//get path to binary and confirm its writable
+	binPath, err := osext.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to find binary path (%s)", err)
+	}
+	mp.binPath = binPath
+	if info, err := os.Stat(binPath); err != nil {
+		return fmt.Errorf("failed to stat binary (%s)", err)
+	} else if info.Size() == 0 {
+		return fmt.Errorf("binary file is empty")
+	} else {
+		//copy permissions
+		mp.binPerms = info.Mode()
+	}
+
+	return nil
 }
 
 //
@@ -97,8 +124,13 @@ func (mp *master) handleSignal(s os.Signal) {
 }
 
 func (mp *master) sendSignal(s os.Signal) {
-	if mp.slaveCmd != nil && mp.slaveCmd.Process != nil {
-		if err := mp.slaveCmd.Process.Signal(s); err != nil {
+	cmd := mp.slaveCmd
+
+	if cmd != nil && cmd.Process != nil {
+		log.Printf("Redirect signal %s to child pid: [%d] from [%d]", s.String(), cmd.Process.Pid, os.Getpid())
+
+		if err := cmd.Process.Signal(s); err != nil {
+			// 如果子进程出问题了，主进程就退出
 			log.Printf("signal failed (%s), assuming slave process died unexpectedly", err)
 			os.Exit(1)
 		}
@@ -145,11 +177,13 @@ func (mp *master) retreiveFileDescriptors() error {
 			}
 			l, err := net.ListenUnix(unixAddress.Network(), unixAddress)
 			if err != nil {
+				log.ErrorErrorf(err, "Create unix domain socket failed")
 				return err
 			}
 
 			f, err := l.File()
 			if err != nil {
+				log.ErrorErrorf(err, "Get file from unix domain socket failed")
 				return fmt.Errorf("Failed to retreive fd for: %s (%s)", addr, err)
 			}
 
@@ -208,13 +242,14 @@ func (mp *master) forkLoop() error {
 	}
 }
 
+// 主进程启动一个子进程
 func (mp *master) fork() error {
 	log.Printf("Starting master process: %s", mp.binPath)
 
 	cmd := exec.Command(mp.binPath)
 	//mark this new process as the "active" slave process.
 	//this process is assumed to be holding the socket files.
-	mp.slaveCmd = cmd
+	mp.slaveCmd = cmd // 覆盖以前的Cmd
 	mp.slaveID++
 
 	//provide the slave process with some state

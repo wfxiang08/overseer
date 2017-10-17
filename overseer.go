@@ -5,7 +5,10 @@ package overseer
 import (
 	"errors"
 	log "github.com/wfxiang08/cyutils/utils/rolling_log"
+	"io/ioutil"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -44,6 +47,7 @@ type Config struct {
 	//NoRestart disables all restarts, this option essentially converts
 	//the RestartSignal into a "ShutdownSignal".
 	NoRestart bool // 默认为false, 表示会重启
+	Pidfile   string
 }
 
 func validate(c *Config) error {
@@ -105,7 +109,26 @@ func runErr(c *Config) error {
 		slaveProcess := &slave{Config: c}
 		return slaveProcess.run()
 	} else {
-		masterProcess := &master{Config: c}
-		return masterProcess.run()
+
+		if len(c.Pidfile) > 0 {
+			// pid文件的管理
+			if pidfile, err := filepath.Abs(c.Pidfile); err != nil {
+				log.WarnErrorf(err, "parse pidfile = '%s' failed", c.Pidfile)
+				// 将pid写入文件
+			} else if err := ioutil.WriteFile(pidfile, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
+				log.WarnErrorf(err, "write pidfile = '%s' failed", pidfile)
+			} else {
+				// 下面的 masterProcess.run() 会一直活着，因此这里的defer会等到程序退出
+				defer func() {
+					if err := os.Remove(pidfile); err != nil {
+						log.WarnErrorf(err, "remove pidfile = '%s' failed", pidfile)
+					}
+				}()
+				log.Warnf("option --pidfile = %s", pidfile)
+			}
+		}
 	}
+
+	masterProcess := &master{Config: c}
+	return masterProcess.run()
 }
