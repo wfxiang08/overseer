@@ -50,7 +50,7 @@ type slave struct {
 }
 
 func (sp *slave) run() error {
-	log.Printf("Slave run...")
+	// log.Printf("Slave run...")
 
 	sp.id = os.Getenv(envSlaveID)
 	sp.state.Enabled = true
@@ -70,13 +70,16 @@ func (sp *slave) run() error {
 
 	sp.watchSignal()
 	//run program with state
-	log.Printf("Slave start program run...")
+	// log.Printf("Slave start program run...")
 
 	// 运行Program
 	sp.Config.Program(sp.state)
 	return nil
 }
 
+//
+// 子进程监控父进程，通过 kill -0 方式监控"死活", 如果父进程挂了，子进程自己退出
+//
 func (sp *slave) watchParent() error {
 	sp.masterPid = os.Getppid()
 
@@ -102,6 +105,7 @@ func (sp *slave) watchParent() error {
 
 // 初始化文件描述符
 func (sp *slave) initFileDescriptors() error {
+
 	//inspect file descriptors
 	numFDs, err := strconv.Atoi(os.Getenv(envNumFDs))
 	if err != nil {
@@ -139,29 +143,28 @@ func (sp *slave) watchSignal() {
 
 		log.Printf("graceful shutdown of slave requested")
 
-		//release any sockets and notify master
+		// 通知Master SIGUSR1，可以fork新的进程了。
+		log.Printf("Child quit SIGUSR1 from [%d] to [%d]", os.Getpid(), sp.masterProc.Pid)
+		sp.masterProc.Signal(SIGUSR1)
+
+		// 接下来的WarmUpTime左右, Slave还会继续工作，等待新的Slave的等准备完毕
+		time.Sleep(sp.WarmUpTime)
+
+		// 通知完毕，自己在慢慢善后
 		if len(sp.listeners) > 0 {
-			//perform graceful shutdown
+			// 释放listeners, 然后准备退出
 			for _, l := range sp.listeners {
 				l.release(sp.Config.TerminateTimeout)
 			}
-			//signal release of held sockets, allows master to start
-			//a new process before this child has actually exited.
-			//early restarts not supported with restarts disabled.
-			if !sp.NoRestart {
-				// 通知Master SIGUSR1
-				log.Printf("Child quit SIGUSR1 from [%d] to [%d]", os.Getpid(), sp.masterProc.Pid)
-				sp.masterProc.Signal(SIGUSR1)
-			}
-			//listeners should be waiting on connections to close...
 		}
 
 		//start death-timer
 		//如何退出呢? 自杀即可
 		go func() {
-			time.Sleep(sp.Config.TerminateTimeout)
-			sp.debugf("timeout. forceful shutdown")
-			os.Exit(1)
+			time.Sleep(sp.Config.TerminateTimeout + 1)
+			// 甭管Clients是什么状态，slave该死的时候还是开开心心去死; 直接Exit(0)
+			log.Printf("timeout. forceful shutdown")
+			os.Exit(0)
 		}()
 	}()
 }

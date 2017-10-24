@@ -20,48 +20,36 @@ const (
 	envBinPath = "OVERSEER_BIN_PATH"
 )
 
-// Config defines overseer's run-time configuration
 type Config struct {
-	//Required will prevent overseer from fallback to running
-	//running the program in the main process on failure.
-	Required bool
-	//Program's main function
+	// 程序主体逻辑
 	Program func(state State)
 
-	//Program's zero-downtime socket listening address (set this or Addresses)
-	Address string
-	//Program's zero-downtime socket listening addresses (set this or Address)
+	// 需要graceful管理的sockets: zero-downtime socket listening addresses
 	Addresses []string
 
-	//RestartSignal will manually trigger a graceful restart. Defaults to SIGUSR2.
+	// 重启信号. Defaults to SIGUSR2.
 	RestartSignal os.Signal
 	//TerminateTimeout controls how long overseer should
 	//wait for the program to terminate itself. After this
 	//timeout, overseer will issue a SIGKILL.
 	TerminateTimeout time.Duration
 
+	// 程序预热时间
+	WarmUpTime time.Duration
+
 	//Debug enables all [overseer] logs.
 	Debug bool
 	//NoWarn disables warning [overseer] logs.
 	NoWarn bool
-	//NoRestart disables all restarts, this option essentially converts
-	//the RestartSignal into a "ShutdownSignal".
-	NoRestart bool // 默认为false, 表示会重启
-	Pidfile   string
+
+	// 主进程的Pid文件
+	Pidfile string
 }
 
 func validate(c *Config) error {
 	//validate
 	if c.Program == nil {
 		return errors.New("overseer.Config.Program required")
-	}
-	if c.Address != "" {
-		if len(c.Addresses) > 0 {
-			return errors.New("overseer.Config.Address and Addresses cant both be set")
-		}
-		c.Addresses = []string{c.Address}
-	} else if len(c.Addresses) > 0 {
-		c.Address = c.Addresses[0]
 	}
 
 	// 设置重启信号: kill -USR2 pid
@@ -73,31 +61,15 @@ func validate(c *Config) error {
 	if c.TerminateTimeout <= 0 {
 		c.TerminateTimeout = 30 * time.Second
 	}
+
+	// 程序预热时间
+	if c.WarmUpTime <= 0 {
+		c.WarmUpTime = 1 * time.Second
+	}
 	return nil
 }
 
-//Run executes overseer, if an error is
-//encountered, overseer fallsback to running
-//the program directly (unless Required is set).
-func Run(c Config) {
-	// 根据给定的配置来运行
-	err := runErr(&c)
-	if err != nil {
-		log.ErrorErrorf(err, "RunErr faild")
-
-		// 如果不是Requried, 那么可以直接在Master进程中运行
-		if c.Required {
-			log.Panicf("[overseer] %s", err)
-		} else if c.Debug || !c.NoWarn {
-			log.Printf("[overseer] disabled. run failed: %s", err)
-		}
-		c.Program(DisabledState)
-		return
-	}
-	os.Exit(0)
-}
-
-func runErr(c *Config) error {
+func Run(c *Config) error {
 
 	if err := validate(c); err != nil {
 		return err
@@ -110,8 +82,10 @@ func runErr(c *Config) error {
 		return slaveProcess.run()
 	} else {
 
+		//
+		// pid文件的管理
+		//
 		if len(c.Pidfile) > 0 {
-			// pid文件的管理
 			if pidfile, err := filepath.Abs(c.Pidfile); err != nil {
 				log.WarnErrorf(err, "parse pidfile = '%s' failed", c.Pidfile)
 				// 将pid写入文件
